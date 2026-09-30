@@ -1,0 +1,114 @@
+name: Build Android APK
+
+# 轻量 Android 构建：仅打 APK 并自动发布到 Release。
+# 不依赖 GH_TOKEN，也不需要签名密钥（使用 GitHub 自动提供的 GITHUB_TOKEN 发布）。
+# Rust 内核使用上游公开 Release 中的预编译包 jasmine-android-core-<version>.zip。
+
+on:
+  workflow_dispatch:
+    inputs:
+      abi:
+        description: 'Android ABI'
+        type: choice
+        required: true
+        default: arm64
+        options:
+          - arm64
+          - arm32
+      core_version:
+        description: '内核版本（对应 Release tag，例如 v1.7.21）。留空则读取 ci/version.code.txt'
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_CHANNEL: stable
+  FLUTTER_VERSION: '3.29.3'
+  JDK_VERSION: '17'
+  NDK_VERSION: '27.2.12479018'
+  # 预编译内核所在的公开仓库（无需 token 即可下载其 Release 资产）
+  CORE_REPO: ComicSparks/jasmine
+
+jobs:
+  build:
+    name: Build Android APK (${{ inputs.abi }})
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup java
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JDK_VERSION }}
+          distribution: 'temurin'
+
+      - name: Setup android tools
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 8512546
+          packages: 'platform-tools platforms;android-32 build-tools;30.0.2 ndk;${{ env.NDK_VERSION }}'
+
+      - name: Setup flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          architecture: x64
+
+      - name: Resolve core version
+        id: core
+        run: |
+          VERSION="${{ inputs.core_version }}"
+          if [ -z "$VERSION" ]; then
+            VERSION=$(cat ci/version.code.txt | xargs echo)
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "core version: $VERSION"
+
+      - name: Download prebuilt Rust core
+        run: |
+          VERSION="${{ steps.core.outputs.version }}"
+          URL="https://github.com/${{ env.CORE_REPO }}/releases/download/${VERSION}/jasmine-android-core-${VERSION}.zip"
+          echo "Downloading $URL"
+          curl -fL -o android-core.zip "$URL"
+          unzip -o android-core.zip -d .
+          ls -R android/app/src/main/jniLibs
+
+      - name: Set version asset
+        run: cp ci/version.code.txt lib/assets/version.txt
+
+      - name: Build APK
+        run: |
+          case "${{ inputs.abi }}" in
+            arm32) FLUTTER_PLATFORM=android-arm ;;
+            *)     FLUTTER_PLATFORM=android-arm64 ;;
+          esac
+          flutter pub get
+          flutter build apk --target-platform "$FLUTTER_PLATFORM" --release
+
+      - name: Publish to Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Release tag 固定取应用版本（ci/version.code.txt），与项目既有约定一致
+          VERSION=$(cat ci/version.code.txt | xargs echo)
+          if [ "${{ inputs.abi }}" = "arm32" ]; then
+            ASSET="jasmine-arm32-${VERSION}.apk"
+          else
+            ASSET="jasmine-arm64-${VERSION}.apk"
+          fi
+
+          if ! gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Release $VERSION not found, creating it."
+            gh release create "$VERSION" -t "$VERSION" -F ci/version.info.txt --target "${{ github.sha }}"
+          else
+            echo "Release $VERSION already exists."
+          fi
+
+          mv build/app/outputs/flutter-apk/app-release.apk "$ASSET"
+          echo "Uploading $ASSET"
+          gh release upload "$VERSION" "${ASSET}#${ASSET}" --clobber
