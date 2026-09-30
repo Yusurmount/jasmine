@@ -1,7 +1,8 @@
 import 'package:event/event.dart';
 import '../basic/methods.dart';
 
-var isPro = false;
+// 已移除爱发电赞助限制：所有功能免费开放
+var isPro = true;
 var isProEx = 0;
 
 ProInfoAf? _proInfoAf;
@@ -17,7 +18,8 @@ Future reloadIsPro() async {
   _proInfoAf = proInfoAll.proInfoAf;
   _proInfoPat = proInfoAll.proInfoPat;
   
-  isPro = _proInfoAf!.isPro || _proInfoPat!.isPro;
+  // 已移除爱发电赞助限制：不再根据发电状态限制功能
+  isPro = true;
   isProEx = _proInfoAf!.expire;
   
   proEvent.broadcast();
